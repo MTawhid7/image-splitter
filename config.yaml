@@ -1,0 +1,30 @@
+# ----------------------------------------------------
+# General Application Settings
+# ----------------------------------------------------
+debug_mode: true
+save_intermediate_images: true
+
+strategy_pipeline:
+  - projection_profile
+  - contour_analysis
+  - midpoint_fallback
+
+# ----------------------------------------------------
+# Strategy-Specific Parameters
+# ----------------------------------------------------
+projection_profile:
+  confidence_threshold: 0.75
+  search_zone_ratio: 0.20
+  divider_color_tolerance: 15
+  consistency_threshold: 10.0
+
+contour_analysis:
+  confidence_threshold: 0.75
+  canny_threshold1: 50
+  canny_threshold2: 150
+  min_contour_area_ratio: 0.15
+  panel_area_similarity_threshold: 0.20
+  grid_alignment_tolerance_px: 50
+
+midpoint_fallback:
+  confidence_threshold: 0.1
