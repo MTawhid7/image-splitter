@@ -2,32 +2,31 @@
 # General Application Settings
 # ----------------------------------------------------
 debug_mode: true
-# Set to true to save the visual contour debugging image
+# Set to true to save the visual debug images for each strategy.
 save_debug_artifacts: true
 
 # ----------------------------------------------------
 # Classifier Settings
 # ----------------------------------------------------
 classifier:
-  hough_threshold: 100
-  hough_min_line_length: 150
-  hough_max_line_gap: 20
-  min_h_lines: 1
-  min_v_lines: 1
-  search_zone_ratio: 0.3
-  mean_variance_multiplier: 1.5
-  divider_variance_threshold: 50
-  adjacent_variance_threshold: 100
-
+  # Tolerance for what is considered the "background color".
+  background_color_tolerance: 25
+  # Kernel size to fill small holes in the background mask.
+  closing_kernel_size: 3
+  # --- The MOST IMPORTANT parameter ---
+  # This controls how aggressively we erode the divider connections.
+  # A larger value will break thicker dividers.
+  erosion_kernel_size: 15
 
 # ----------------------------------------------------
 # Post-Processing Settings
 # ----------------------------------------------------
 trimming:
+  # Enables the final aesthetic centering and padding stage.
   enabled: true
-  # This now controls the aesthetic border around the centered content.
+  # The pixel border to add around the content on the final canvas.
   padding: 25
-  # Canny edge threshold used by find_content_bounds helper
+  # The Canny edge detection threshold used by the find_content_bounds helper.
   canny_threshold: 30
 
 # ----------------------------------------------------
@@ -45,16 +44,23 @@ strategy_pipeline:
 # ----------------------------------------------------
 projection_profile:
   confidence_threshold: 0.75
+  # Overrides the general classifier search zone for this specific strategy.
   search_zone_ratio: 0.20
   divider_color_tolerance: 15
   consistency_threshold: 10.0
 
 contour_analysis:
   confidence_threshold: 0.80
+  # For adaptive thresholding, must be an odd number.
   adaptive_block_size: 15
+  # A constant subtracted from the mean to fine-tune the threshold.
   adaptive_c_value: 4
+  # The kernel size for the morphological cleaning operation.
   morph_kernel_size: 5
-  morph_operation: 'close' # Use 'close' to heal contours, 'open' to remove noise
+  # Use 'close' to heal broken contours (best for outlines), 'open' to remove small noise.
+  morph_operation: 'close'
+  # The minimum area a contour must have to be considered a panel,
+  # expressed as a ratio of the total image area.
   min_contour_area_ratio: 0.01
 
 vertical_projection_split:
