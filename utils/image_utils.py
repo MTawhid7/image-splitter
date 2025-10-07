@@ -36,35 +36,37 @@ def save_image(image: Image, output_path: str) -> bool:
         logging.error(f"Failed to save image to {output_path}: {e}")
         return False
 
+
 def find_content_bounds(image: Image, config: dict) -> tuple[int, int, int, int] | None:
     """
     Finds the bounding box of the main content in an image panel using a robust
-    edge-detection (Canny) method. This is the most reliable way to find
-    "content" regardless of background color.
+    edge-detection (Canny) method.
     """
+    # --- ROBUSTNESS FIX: Check if the image is empty ---
+    if image is None or image.size == 0:
+        logging.warning("Trim: Received an empty image. Cannot find content.")
+        return None
     try:
-        trim_config = config.get('trimming', {})
-        canny_threshold = trim_config.get('canny_threshold', 30)
+        trim_config = config.get("trimming", {})
+        canny_threshold = trim_config.get("canny_threshold", 30)
 
         grayscale = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(grayscale, (5, 5), 0)
-
         edges = cv2.Canny(blurred, canny_threshold, canny_threshold * 2)
-
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(
+            edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
 
         if not contours:
-            logging.warning("Trim: No contours found in the image panel.")
             return None
 
         all_points = np.vstack([c for c in contours])
-
-        # --- THE FIX IS HERE: Unpack and repack to create a specific 4-element tuple ---
         x, y, w, h = cv2.boundingRect(all_points)
-        return int(x), int(y), int(w), int(h)
+        return (int(x), int(y), int(w), int(h))
     except Exception as e:
         logging.error(f"Error during edge-based content bounds detection: {e}.")
         return None
+
 
 def find_precise_bounds(gray_image: Image, center_x: int, center_y: int, config: dict) -> tuple[int, int, int, int] | None:
     """Finds precise divider bounds using robust band-scanning."""
