@@ -10,9 +10,8 @@ from utils.debug_utils import save_contour_debug_image
 
 class ContourAnalysisStrategy(BaseSplittingStrategy):
     """
-    A robust strategy for seamless images. It uses adaptive thresholding and
-    morphological operations to isolate content 'blobs', then identifies
-    and crops the four largest distinct areas.
+    A robust strategy for seamless images that uses a corner-based sorting
+    algorithm to correctly order panels regardless of their alignment.
     """
 
     def split(self, image: Image, filename: str) -> SplitResult:
@@ -36,7 +35,6 @@ class ContourAnalysisStrategy(BaseSplittingStrategy):
                 block_size,
                 c_value,
             )
-
             kernel = np.ones((kernel_size, kernel_size), np.uint8)
             cleaned_mask = (
                 cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
@@ -50,10 +48,6 @@ class ContourAnalysisStrategy(BaseSplittingStrategy):
             min_area = total_area * min_area_ratio
             valid_contours = [c for c in contours if cv2.contourArea(c) > min_area]
 
-            logging.debug(
-                f"Contour Analysis: Found {len(contours)} total, {len(valid_contours)} valid contours."
-            )
-
             if len(valid_contours) < 4:
                 return self._failed_result(
                     f"Found only {len(valid_contours)} distinct content areas. Needed 4."
@@ -62,37 +56,51 @@ class ContourAnalysisStrategy(BaseSplittingStrategy):
             valid_contours.sort(key=cv2.contourArea, reverse=True)
             top_4_contours = valid_contours[:4]
 
-            # cv2.boundingRect returns numpy integers; explicitly cast to Python ints
-            # to satisfy the strict type checking required by downstream functions.
             bounding_boxes: List[Tuple[int, int, int, int]] = []
             for c in top_4_contours:
                 x, y, w, h = cv2.boundingRect(c)
                 bounding_boxes.append((int(x), int(y), int(w), int(h)))
 
-            y_sorted = sorted(bounding_boxes, key=lambda b: b[1])
-            mid_y_split = (y_sorted[1][1] + y_sorted[2][1]) / 2
-            top_row = [b for b in bounding_boxes if b[1] < mid_y_split]
-            bottom_row = [b for b in bounding_boxes if b[1] >= mid_y_split]
+            # --- THE ROBUST FIX: Use corner-based sorting instead of fragile row sorting ---
+            # Calculate the center of each bounding box
+            centers = [
+                (int(x + w / 2), int(y + h / 2)) for x, y, w, h in bounding_boxes
+            ]
 
-            if len(top_row) != 2 or len(bottom_row) != 2:
-                return self._failed_result(
-                    "Could not spatially arrange contours into a 2x2 grid."
-                )
+            # Sort boxes based on their center's distance to each corner of the image
+            # Top-Left is closest to (0, 0)
+            tl_box = min(
+                bounding_boxes,
+                key=lambda b: np.sqrt((b[0] + b[2] / 2) ** 2 + (b[1] + b[3] / 2) ** 2),
+            )
+            # Top-Right is closest to (width, 0)
+            tr_box = min(
+                bounding_boxes,
+                key=lambda b: np.sqrt(
+                    (b[0] + b[2] / 2 - width) ** 2 + (b[1] + b[3] / 2) ** 2
+                ),
+            )
+            # Bottom-Left is closest to (0, height)
+            bl_box = min(
+                bounding_boxes,
+                key=lambda b: np.sqrt(
+                    (b[0] + b[2] / 2) ** 2 + (b[1] + b[3] / 2 - height) ** 2
+                ),
+            )
+            # Bottom-Right is closest to (width, height)
+            br_box = min(
+                bounding_boxes,
+                key=lambda b: np.sqrt(
+                    (b[0] + b[2] / 2 - width) ** 2 + (b[1] + b[3] / 2 - height) ** 2
+                ),
+            )
 
-            top_row.sort(key=lambda b: b[0])
-            bottom_row.sort(key=lambda b: b[0])
-            sorted_boxes = top_row + bottom_row
+            sorted_boxes = [tl_box, tr_box, bl_box, br_box]
 
             cropped_images = [
                 image[y : y + h, x : x + w] for (x, y, w, h) in sorted_boxes
             ]
-
-            # --- LOGIC FIX: The content is the *entire* cropped panel. ---
-            # The bounds relative to the panel are (0, 0, width, height).
-            # Explicitly cast to int to satisfy the strict type checking.
-            relative_bounds: List[Tuple[int, int, int, int]] = [
-                (0, 0, int(w), int(h)) for _, _, w, h in sorted_boxes
-            ]
+            relative_bounds = [(0, 0, int(w), int(h)) for _, _, w, h in sorted_boxes]
 
             if self.debug:
                 debug_dir = "output_results/debug"
@@ -105,9 +113,6 @@ class ContourAnalysisStrategy(BaseSplittingStrategy):
                     filename,
                 )
 
-            logging.info(
-                "Successfully isolated and sorted 4 content panels using Contour Analysis."
-            )
             return SplitResult(
                 success=True,
                 strategy_used="contour_analysis",
@@ -115,9 +120,7 @@ class ContourAnalysisStrategy(BaseSplittingStrategy):
                 images=cropped_images,
                 bounds=relative_bounds,
             )
-
         except Exception as e:
-            logging.error(f"Error in ContourAnalysisStrategy: {e}", exc_info=True)
             return self._failed_result(str(e))
 
     def _failed_result(self, message: str) -> SplitResult:

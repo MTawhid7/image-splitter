@@ -2,9 +2,10 @@
 PYTHON = python
 INPUT_DIR = input_images
 OUTPUT_DIR = output_results
+DEBUG_DIR = $(OUTPUT_DIR)/debug
 
 # --- Commands ---
-.PHONY: install run clean clean-output
+.PHONY: install run clean
 
 install:
 	@echo "Creating virtual environment and installing dependencies..."
@@ -16,21 +17,12 @@ run:
 	@echo "Running the image splitter..."
 	$(PYTHON) main.py --input-dir $(INPUT_DIR) --output-dir $(OUTPUT_DIR)
 
-clean-output:
-	@echo "Clearing output directory: $(OUTPUT_DIR)"
-	rm -f $(OUTPUT_DIR)/*
-	# --- THE FIX: Also remove the debug directory ---
-	rm -rf $(OUTPUT_DIR)/debug
-
 clean:
-	@echo "Cleaning up the project (venv, pycache, output)..."
-	rm -rf venv
-	rm -rf __pycache__
-	rm -rf */__pycache__
-	rm -f $(OUTPUT_DIR)/*
-	# --- THE FIX: Also remove the debug directory ---
-	rm -rf $(OUTPUT_DIR)/debug
-	@echo "Cleanup complete."
+	@echo "Clearing output directory: $(OUTPUT_DIR)"
+	# Remove everything (files and directories) inside output_results safely
+	rm -rf $(OUTPUT_DIR)/*
+	# Optional: also ensure the debug directory is cleared (if recreated elsewhere)
+	rm -rf $(DEBUG_DIR)
 
 test:
 	@echo "Test suite not yet implemented."
