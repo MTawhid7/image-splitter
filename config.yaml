@@ -2,12 +2,43 @@
 # General Application Settings
 # ----------------------------------------------------
 debug_mode: true
-save_intermediate_images: true
+# Set to true to save the visual contour debugging image
+save_debug_artifacts: true
 
+# ----------------------------------------------------
+# Classifier Settings
+# ----------------------------------------------------
+classifier:
+  hough_threshold: 100
+  hough_min_line_length: 150
+  hough_max_line_gap: 20
+  min_h_lines: 1
+  min_v_lines: 1
+  search_zone_ratio: 0.3
+  mean_variance_multiplier: 1.5
+  divider_variance_threshold: 50
+  adjacent_variance_threshold: 100
+
+
+# ----------------------------------------------------
+# Post-Processing Settings
+# ----------------------------------------------------
+trimming:
+  enabled: true
+  # This now controls the aesthetic border around the centered content.
+  padding: 25
+  # Canny edge threshold used by find_content_bounds helper
+  canny_threshold: 30
+
+# ----------------------------------------------------
+# Strategy Pipeline (Order for loading and manual fallback)
+# ----------------------------------------------------
 strategy_pipeline:
   - projection_profile
   - contour_analysis
   - midpoint_fallback
+  - vertical_projection_split
+  - horizontal_projection_split
 
 # ----------------------------------------------------
 # Strategy-Specific Parameters
@@ -19,12 +50,18 @@ projection_profile:
   consistency_threshold: 10.0
 
 contour_analysis:
-  confidence_threshold: 0.75
-  canny_threshold1: 50
-  canny_threshold2: 150
-  min_contour_area_ratio: 0.15
-  panel_area_similarity_threshold: 0.20
-  grid_alignment_tolerance_px: 50
+  confidence_threshold: 0.80
+  adaptive_block_size: 15
+  adaptive_c_value: 4
+  morph_kernel_size: 5
+  morph_operation: 'close' # Use 'close' to heal contours, 'open' to remove noise
+  min_contour_area_ratio: 0.01
+
+vertical_projection_split:
+  confidence_threshold: 0.85
+
+horizontal_projection_split:
+  confidence_threshold: 0.85
 
 midpoint_fallback:
   confidence_threshold: 0.1

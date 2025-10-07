@@ -1,123 +1,127 @@
 import cv2
 import numpy as np
 import logging
+from typing import List, Tuple
+
 from core.data_models import SplitResult, Image
 from strategies.base_strategy import BaseSplittingStrategy
+from utils.debug_utils import save_contour_debug_image
 
 
 class ContourAnalysisStrategy(BaseSplittingStrategy):
     """
-    Splits an image by finding all content contours, sorting them into quadrants,
-    and creating a master bounding box for each quadrant's content.
+    A robust strategy for seamless images. It uses adaptive thresholding and
+    morphological operations to isolate content 'blobs', then identifies
+    and crops the four largest distinct areas.
     """
 
-    def split(self, image: Image) -> SplitResult:
+    def split(self, image: Image, filename: str) -> SplitResult:
         try:
-            grayscale_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            blurred_image = cv2.GaussianBlur(grayscale_image, (5, 5), 0)
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            height, width = gray.shape
+            total_area = height * width
 
-            canny_thresh1 = self.config.get("canny_threshold1", 50)
-            canny_thresh2 = self.config.get("canny_threshold2", 150)
-            edges = cv2.Canny(blurred_image, canny_thresh1, canny_thresh2)
+            cfg = self.config
+            block_size = cfg.get("adaptive_block_size", 15)
+            c_value = cfg.get("adaptive_c_value", 4)
+            kernel_size = cfg.get("morph_kernel_size", 5)
+            min_area_ratio = cfg.get("min_contour_area_ratio", 0.01)
+            morph_operation = cfg.get("morph_operation", "close")
 
-            # --- UPGRADE: Find ALL contours, not just external ones ---
-            contours, _ = cv2.findContours(
-                edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE
+            thresh = cv2.adaptiveThreshold(
+                gray,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY_INV,
+                block_size,
+                c_value,
             )
 
-            if not contours:
-                return self._failed_result("No contours found in the image.")
+            kernel = np.ones((kernel_size, kernel_size), np.uint8)
+            cleaned_mask = (
+                cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+                if morph_operation == "close"
+                else cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+            )
 
-            # --- NEW LOGIC: Sort contours into quadrant buckets ---
-            height, width = image.shape[:2]
-            mid_x, mid_y = width // 2, height // 2
+            contours, _ = cv2.findContours(
+                cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            min_area = total_area * min_area_ratio
+            valid_contours = [c for c in contours if cv2.contourArea(c) > min_area]
 
-            quadrant_contours = {"tl": [], "tr": [], "bl": [], "br": []}
+            logging.debug(
+                f"Contour Analysis: Found {len(contours)} total, {len(valid_contours)} valid contours."
+            )
 
-            for c in contours:
-                # Filter out tiny noise contours
-                if cv2.contourArea(c) < 100:
-                    continue
-
-                # Get the center of the contour
-                M = cv2.moments(c)
-                if M["m00"] == 0:
-                    continue
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
-
-                # Assign to a bucket based on its center
-                if cx < mid_x and cy < mid_y:
-                    quadrant_contours["tl"].append(c)
-                elif cx >= mid_x and cy < mid_y:
-                    quadrant_contours["tr"].append(c)
-                elif cx < mid_x and cy >= mid_y:
-                    quadrant_contours["bl"].append(c)
-                else:
-                    quadrant_contours["br"].append(c)
-
-            # --- NEW LOGIC: Create a master bounding box for each bucket ---
-            final_boxes = []
-            for quad in ["tl", "tr", "bl", "br"]:
-                if not quadrant_contours[quad]:
-                    return self._failed_result(
-                        f"No content contours found in the {quad} quadrant."
-                    )
-
-                # Combine all contours in the quadrant into one mega-contour
-                all_points = np.vstack(quadrant_contours[quad])
-                # Get the bounding box of the combined points
-                final_boxes.append(cv2.boundingRect(all_points))
-
-            confidence = self._validate_grid_layout(final_boxes)
-            if confidence < self.config.get("confidence_threshold", 0.75):
+            if len(valid_contours) < 4:
                 return self._failed_result(
-                    f"Panel layout validation failed. Confidence {confidence:.2f} is below threshold."
+                    f"Found only {len(valid_contours)} distinct content areas. Needed 4."
                 )
 
-            images = [image[y : y + h, x : x + w] for (x, y, w, h) in final_boxes]
+            valid_contours.sort(key=cv2.contourArea, reverse=True)
+            top_4_contours = valid_contours[:4]
 
+            # cv2.boundingRect returns numpy integers; explicitly cast to Python ints
+            # to satisfy the strict type checking required by downstream functions.
+            bounding_boxes: List[Tuple[int, int, int, int]] = []
+            for c in top_4_contours:
+                x, y, w, h = cv2.boundingRect(c)
+                bounding_boxes.append((int(x), int(y), int(w), int(h)))
+
+            y_sorted = sorted(bounding_boxes, key=lambda b: b[1])
+            mid_y_split = (y_sorted[1][1] + y_sorted[2][1]) / 2
+            top_row = [b for b in bounding_boxes if b[1] < mid_y_split]
+            bottom_row = [b for b in bounding_boxes if b[1] >= mid_y_split]
+
+            if len(top_row) != 2 or len(bottom_row) != 2:
+                return self._failed_result(
+                    "Could not spatially arrange contours into a 2x2 grid."
+                )
+
+            top_row.sort(key=lambda b: b[0])
+            bottom_row.sort(key=lambda b: b[0])
+            sorted_boxes = top_row + bottom_row
+
+            cropped_images = [
+                image[y : y + h, x : x + w] for (x, y, w, h) in sorted_boxes
+            ]
+
+            # --- LOGIC FIX: The content is the *entire* cropped panel. ---
+            # The bounds relative to the panel are (0, 0, width, height).
+            # Explicitly cast to int to satisfy the strict type checking.
+            relative_bounds: List[Tuple[int, int, int, int]] = [
+                (0, 0, int(w), int(h)) for _, _, w, h in sorted_boxes
+            ]
+
+            if self.debug:
+                debug_dir = "output_results/debug"
+                save_contour_debug_image(
+                    image,
+                    valid_contours,
+                    top_4_contours,
+                    sorted_boxes,
+                    debug_dir,
+                    filename,
+                )
+
+            logging.info(
+                "Successfully isolated and sorted 4 content panels using Contour Analysis."
+            )
             return SplitResult(
                 success=True,
                 strategy_used="contour_analysis",
-                confidence=confidence,
-                images=images,
+                confidence=0.9,
+                images=cropped_images,
+                bounds=relative_bounds,
             )
 
         except Exception as e:
-            logging.error(f"Error during contour analysis splitting: {e}")
+            logging.error(f"Error in ContourAnalysisStrategy: {e}", exc_info=True)
             return self._failed_result(str(e))
 
-    # ... (The _validate_grid_layout and _failed_result methods remain unchanged) ...
-    def _validate_grid_layout(self, boxes: list) -> float:
-        if len(boxes) != 4:
-            return 0.0
-        areas = [w * h for x, y, w, h in boxes]
-        mean_area = np.mean(areas)
-        if mean_area == 0:
-            return 0.0
-        std_dev_area = np.std(areas)
-        area_similarity_score = max(0, 1.0 - (std_dev_area / mean_area))
-        area_threshold = self.config.get("panel_area_similarity_threshold", 0.2)
-        if (std_dev_area / mean_area) > area_threshold:
-            logging.warning(
-                f"Panel areas are not similar enough. CoV: {std_dev_area / mean_area:.2f}"
-            )
-            return 0.0
-        centroids = [(x + w // 2, y + h // 2) for x, y, w, h in boxes]
-        centroids.sort(key=lambda p: (p[1], p[0]))
-        tl, tr, bl, br = centroids
-        tolerance = self.config.get("grid_alignment_tolerance_px", 50)
-        align_y1 = abs(tl[1] - tr[1]) < tolerance
-        align_y2 = abs(bl[1] - br[1]) < tolerance
-        align_x1 = abs(tl[0] - bl[0]) < tolerance
-        align_x2 = abs(tr[0] - br[0]) < tolerance
-        grid_score = sum([align_y1, align_y2, align_x1, align_x2]) / 4.0
-        confidence = (area_similarity_score * 0.5) + (grid_score * 0.5)
-        return float(confidence)
-
     def _failed_result(self, message: str) -> SplitResult:
-        logging.warning(f"Contour Analysis Strategy failed: {message}")
+        logging.warning(f"Contour Analysis failed: {message}")
         return SplitResult(
             success=False,
             strategy_used="contour_analysis",
